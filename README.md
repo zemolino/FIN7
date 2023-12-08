@@ -274,6 +274,7 @@ T1110 Brute Force - Password change after succesful brute force:
     ```
     
     T1110.003 - Brute Force: Password Spraying
+    
     **KQL:**
     ```
     let thresholdForUniqueFailedAccounts = 20;
