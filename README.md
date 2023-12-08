@@ -5,7 +5,7 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
 * FIN7 often utilizes spearphishing emails with malicious attachments or links to deliver malware.
 * They use social engineering to craft convincing emails.
 
-**B. PowerShell:**
+**B. Execution:**
 * FIN7 leverages PowerShell for various tasks, such as downloading payloads and executing commands.
 
 **C. Credential Dumping:**
@@ -28,14 +28,14 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
 
 ### Detection Rule Proposals:
 
-**A. Spearphishing (TA0001: Initial Access):**
+**A. Initial Access:**
 - **Enhancement:** Develop email filtering rules based on known indicators of compromise (IoCs) and use machine learning to detect anomalies in email content.
 
 - **Detection Rule:**
 
     **Spearphishing Attachment (T1566.001):**
 
-    Adversaries may use macro enabled files go gain access to the network. If the macros are not enabled the attacker will try to convice target to enable them to run the scripts in the background. This query detects when a macro attachment is opened that came from a rare sender from the last 7 days.
+    FIN7 uses macro enabled files go gain access to the network. If the macros are not enabled the attacker will try to convice target to enable them to run the scripts in the background. This query detects when a macro attachment is opened that came from a rare sender from the last 7 days.
 
     **Defender For Endpoint**
     ```
@@ -90,3 +90,26 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
     - https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Office%20365/Email%20-%20MacroAttachmentOpenedFromRareSender.md
     
     **Spearphishing Link (T1566.002):**
+The EmailClusterId which can be assigned to a mail is the identifier for the group of similar emails clustered based on heuristic analysis of their contents. Therefore this identifier can be leveraged to find related mails. This can for example be from a different sender or the content of the mail has changed from Hello Bob to Hello Alice but the rest of the contents has stayed the same. This query searches for mails that have the same EmailClusterId but have different senders. Furthermore only emails that contain a URL are selected by joining the EmailUrlInfo table.
+    ```
+    let RareDomainThreshold = 20;
+    let TotalSenderThreshold = 1;
+    let RareDomains = EmailEvents
+    | summarize TotalDomainMails = count() by SenderFromDomain
+    | where TotalDomainMails <= RareDomainThreshold
+    | project SenderFromDomain;
+    EmailEvents
+    | where EmailDirection == "Inbound"
+    | where SenderFromDomain in (RareDomains)
+    | where isnotempty(EmailClusterId)
+    | join kind=inner EmailUrlInfo on NetworkMessageId
+    | summarize Subjects = make_set(Subject), Senders = make_set(SenderFromAddress) by EmailClusterId
+    | extend TotalSenders = array_length(Senders)
+    | where TotalSenders >= TotalSenderThreshold
+    ```
+    #### References
+    - https://learn.microsoft.com/en-us/microsoft-365/security/defender/advanced-hunting-emailevents-table?view=o365-worldwide
+    - https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Office%20365/Email%20-%20PotentialPhishingCampaign.md
+    
+**A. Execution:**
+Command and Scripting Interpreter
