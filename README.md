@@ -114,4 +114,34 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
     - https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Office%20365/Email%20-%20PotentialPhishingCampaign.md
     
 **A. Execution:**
-Command and Scripting Interpreter
+- **Detection Rule:**
+
+    **PowerShell(T1059.001):**
+    **Splunk:**
+    **Detect Empire with PowerShell Script Block Logging:**
+    The following analytic utilizes PowerShell Script Block Logging (EventCode=4104) to identify suspicious PowerShell execution. Script Block Logging captures the command sent to PowerShell, the full command to be executed. Upon enabling, logs will output to Windows event logs. Dependent upon volume, enable on critical endpoints or all.
+     ```
+    search: '`powershell` EventCode=4104  (ScriptBlockText=*system.net.webclient* AND
+  ScriptBlockText=*frombase64string*) | stats count min(_time) as firstTime max(_time)
+  as lastTime by Opcode Computer UserID EventCode ScriptBlockText | `security_content_ctime(firstTime)`
+  | `security_content_ctime(lastTime)` | `detect_empire_with_powershell_script_block_logging_filter`'
+  ```
+  #### References
+     - https://github.com/splunk/security_content/blob/develop/detections/endpoint/detect_empire_with_powershell_script_block_logging.yml
+      
+     **KQL:**
+     An attacker uses the System.Management.Automation DLL to execute powershell commands, instead of the PowerShell.exe
+    ```
+    DeviceImageLoadEvents
+    | where FileName =~ "System.Management.Automation.dll" or FileName =~ "System.Management.Automation.ni.dll"
+    | where InitiatingProcessFolderPath !~ "C:\\Windows\\System32\\WindowsPowerShell\\v1.0" and InitiatingProcessFolderPath !~ "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0"  and (InitiatingProcessFileName !~ "powershell.exe" or InitiatingProcessFileName !~ "powershell_ise.exe")
+    // The RemoteFXvGPUDisablement.exe is for GPU virtualization, MS recommends to remove this service as of July 2020. 
+    | where InitiatingProcessFolderPath !~ "C:\\Windows\\system32" and InitiatingProcessFileName !~ "RemoteFXvGPUDisablement.exe"
+    // exclusions below can be enabled if you're using visual studio 
+    //| where InitiatingProcessFolderPath !contains "C:\\Windows\\Microsoft.NET\\Framework" and InitiatingProcessFileName !~ "devenv.exe"
+    //| where InitiatingProcessFolderPath !contains "\\Microsoft Visual Studio\\2019\\Community\\Common7\\ServiceHub\\Hosts\\ServiceHub.Host.CLR.x86" and InitiatingProcessFileName !startswith "servicehub"
+    //| where InitiatingProcessFolderPath !contains "\\Microsoft Visual Studio\\2019\\Community\\Common7\\IDE" and InitiatingProcessFileName !~ "mscorsvw.exe" and InitiatingProcessParentFileName !~ "ngen.exe"
+    | project Timestamp,DeviceName,InitiatingProcessAccountName,ActionType,InitiatingProcessFileName,InitiatingProcessCommandLine,InitiatingProcessIntegrityLevel,FileName,InitiatingProcessParentId,InitiatingProcessId
+    ```
+    #### References
+     - https://github.com/FalconForceTeam/FalconFriday/blob/master/Execution/T1059.001-WIN-001.md
