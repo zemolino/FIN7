@@ -185,8 +185,7 @@ T1543.003 - Create or Modify System Process: Windows Service:
 **D. Privilege Escalation:**
 - **Detection Rule:**
 T1548.003 Abuse Elevation Control Mechanism: Sudo and Sudo Caching:
-
-    **KQL:**
+     **KQL:**
     ```
     let Commands = dynamic([@"usermod -aG sudo", @"usermod -a -G sudo"]);
     DeviceProcessEvents
@@ -199,7 +198,6 @@ T1548.003 Abuse Elevation Control Mechanism: Sudo and Sudo Caching:
 **E. Defense Evasion:**
 - **Detection Rule:**
 T1027 Obfuscated Files or Information - PowerShell Encoded Commands Executed By Device:
-
      **KQL:**
     ```
     let EncodedList = dynamic(['-encodedcommand', '-enc']); 
@@ -217,7 +215,6 @@ T1027 Obfuscated Files or Information - PowerShell Encoded Commands Executed By 
     | sort by TotalEncodedExecutions
     ```
     T1027 Obfuscated Files or Information - All Encoded Powershell Commands:
-  
     **KQL:**
     ```
     let EncodedList = dynamic(['-encodedcommand', '-enc']); 
@@ -244,7 +241,6 @@ T1027 Obfuscated Files or Information - PowerShell Encoded Commands Executed By 
 **E. Credential Access:**
 - **Detection Rule:**
 T1110 Brute Force - Password change after succesful brute force:
-
     **KQL:**
     ```
     let FailedLogonsThreshold = 20;
@@ -297,4 +293,14 @@ T1110 Brute Force - Password change after succesful brute force:
     | project-rename IPAddress=RemoteIP
     | where UniqueAccountFailedLogons > thresholdForUniqueFailedAccounts and SuccessLogonCount*ratioSuccessFailedLogons < FailedLogonCount and UniqueAccountFailedLogons*upperBoundOfFailedLogonsPerAccount > FailedLogonCount 
     ```
-    
+**F. Discovery:**
+- **Detection Rule:**
+T1040 Network Sniffing- Windows Network Sniffing:
+    **KQL:** 
+    ```
+    DeviceProcessEvents
+    | where FileName == "PktMon.exe"
+    | project Timestamp, DeviceName, ProcessCommandLine
+    ```
+
+        
