@@ -8,23 +8,32 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
 **B. Execution:**
 * FIN7 leverages PowerShell for various tasks, such as downloading payloads and executing commands.
 
-**C. Credential Dumping:**
-* The threat actor extracts credentials from compromised systems to escalate privileges or move laterally.
+**C. Persistance:**
+* 
 
-**D. Registry Run Keys / Startup Folder:**
-* FIN7 persists by adding malicious entries in the Registry Run keys or Startup folder.
+**D. Privilege Escalation:**
+* 
 
-**E. User Account Control (UAC) Bypass:**
-*  FIN7 attempts to bypass UAC to execute elevated commands without user consent.
+**E. Defense Evasion:**
+*  
 
-**F. PowerShell Profile:**
-* The group modifies PowerShell profiles to establish persistence and execute malicious actions.
+**F. Credential Access:**
+* 
 
-**G. File Deletion:**
-* FIN7 deletes files to hinder forensic analysis and cover their tracks.
+**G. Discovery:**
+* 
 	
-**H. Data Encrypted:**
-* The threat actor encrypts data to extort victims and demands ransom payments.
+**H. Lateral Movement:**
+* 
+
+**H. Collection:**
+* 
+
+**H. Command and Controlt:**
+* 
+
+**H. Exfiltration:**
+* 
 
 ### Detection Rule Proposals:
 
@@ -128,6 +137,7 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
   ```
   #### References
      - https://github.com/splunk/security_content/blob/develop/detections/endpoint/detect_empire_with_powershell_script_block_logging.yml
+     - https://www.splunk.com/en_us/blog/security/hunting-for-malicious-powershell-using-script-block-logging.html
       
      **KQL:**
      An attacker uses the System.Management.Automation DLL to execute powershell commands, instead of the PowerShell.exe
@@ -145,3 +155,141 @@ FIN7 is a sophisticated threat actor known for financially motivated attacks aga
     ```
     #### References
      - https://github.com/FalconForceTeam/FalconFriday/blob/master/Execution/T1059.001-WIN-001.md
+
+**C. Persistance:**
+- **Detection Rule:**
+T1543.003 - Create or Modify System Process: Windows Service:
+
+     **KQL:**
+    ```
+    let netevents=DeviceNetworkEvents 
+    | where ActionType == "InboundConnectionAccepted"
+    | where InitiatingProcessFolderPath == @"c:\windows\system32\services.exe"
+    // IMPORTANT There is some legitimate use for maintenance by support teams, filter their IP addresses/blocks below
+    | where not(RemoteIP has_any ("maintenance-ip-1","maintenance-ip-2","maintenance-ip-3"))
+    | project Timestamp,DeviceId,ActionType,InitiatingProcessFolderPath, DeviceName, RemoteIP, InitiatingProcessId;
+    let regevents=DeviceRegistryEvents 
+    | where RegistryKey contains @"\System\CurrentControlSet\Services" or RegistryKey contains @"\System\ControlSet001\Services"
+    | where ActionType contains "Created"
+    |project DeviceId, ActionType, RegistryKey, RegistryValueType,RegistryValueData, InitiatingProcessFolderPath,InitiatingProcessId, DeviceName;
+    let rpcservices = 
+    	netevents
+    	| join kind=leftouter  (regevents) on DeviceId, InitiatingProcessFolderPath,InitiatingProcessId;
+    rpcservices
+    | project Timestamp,DeviceName,RemoteIP,ActionType1 ,RegistryKey, RegistryValueType, RegistryValueData
+    |summarize count() by RemoteIP
+    ```
+    #### References
+     - https://github.com/FalconForceTeam/FalconFriday/blob/master/Persistence/T1543.003-WIN-001.md
+
+**D. Privilege Escalation:**
+- **Detection Rule:**
+T1548.003 Abuse Elevation Control Mechanism: Sudo and Sudo Caching:
+     **KQL:**
+    ```
+    let Commands = dynamic([@"usermod -aG sudo", @"usermod -a -G sudo"]);
+    DeviceProcessEvents
+    | extend RegexGroupAddition = extract("adduser(.*) sudo", 0, ProcessCommandLine)
+    | where ProcessCommandLine has_any (Commands) or isnotempty(RegexGroupAddition)
+    ```
+    #### References
+     - https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Defender%20For%20Endpoint/Linux/Linux%20-%20UsersAddedToSudoersGroup.md
+
+**E. Defense Evasion:**
+- **Detection Rule:**
+T1027 Obfuscated Files or Information - PowerShell Encoded Commands Executed By Device:
+     **KQL:**
+    ```
+    let EncodedList = dynamic(['-encodedcommand', '-enc']); 
+    // For more results use line below en filter one above. This will also return more FPs.
+    // let EncodedList = dynamic(['-encodedcommand', '-enc', '-e']);
+    let TimeFrame = 48h; //Customizable h = hours, d = days
+    DeviceProcessEvents
+    | where Timestamp > ago(TimeFrame)
+    | where ProcessCommandLine contains "powershell" or InitiatingProcessCommandLine contains "powershell"
+    | where ProcessCommandLine has_any (EncodedList) or InitiatingProcessCommandLine has_any (EncodedList)
+    | extend base64String = extract(@'\s+([A-Za-z0-9+/]{20}\S+$)', 1, ProcessCommandLine)
+    | extend DecodedCommandLine = base64_decode_tostring(base64String)
+    | where not(isempty(base64String) and isempty(DecodedCommandLine))
+    | summarize TotalEncodedExecutions = count() by DeviceName
+    | sort by TotalEncodedExecutions
+    ```
+    T1027 Obfuscated Files or Information - All Encoded Powershell Commands:
+    **KQL:**
+    ```
+    let EncodedList = dynamic(['-encodedcommand', '-enc']); 
+    // For more results use line below en filter one above. This will also return more FPs.
+    // let EncodedList = dynamic(['-encodedcommand', '-enc', '-e']);
+    let TimeFrame = 48h; //Customizable h = hours, d = days
+    DeviceProcessEvents
+    | where Timestamp > ago(TimeFrame)
+    | where ProcessCommandLine contains "powershell" or InitiatingProcessCommandLine contains "powershell"
+    | where ProcessCommandLine has_any (EncodedList) or InitiatingProcessCommandLine has_any (EncodedList)
+    | extend base64String = extract(@'\s+([A-Za-z0-9+/]{20}\S+$)', 1, ProcessCommandLine)
+    | extend DecodedCommandLine = base64_decode_tostring(base64String)
+    | extend DecodedCommandLineReplaceEmptyPlaces = replace_string(DecodedCommandLine, '\u0000', '')
+    | where isnotempty(base64String) and isnotempty(DecodedCommandLineReplaceEmptyPlaces)
+    | summarize UniqueExecutionsList = make_set(DecodedCommandLineReplaceEmptyPlaces) by DeviceName
+    | extend TotalUniqueEncodedCommandsExecuted = array_length(UniqueExecutionsList)
+    | project DeviceName, TotalUniqueEncodedCommandsExecuted, UniqueExecutionsList
+    | sort by TotalUniqueEncodedCommandsExecuted
+    ```
+    #### References
+     - https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Defender%20For%20Endpoint/PowerShellEncodedCommandsByDevice.md
+     - https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Defender%20For%20Endpoint/PowerShellEncodedCommandsExecuted.md
+
+**E. Credential Access:**
+- **Detection Rule:**
+T1110 Brute Force - Password change after succesful brute force:
+    **KQL:**
+    ```
+    let FailedLogonsThreshold = 20;
+    let SuccessfulLogonsThreshold = 1;
+    let TimeWindow = 15m;
+    // Time between the succesful brute force and password change. Difference should be added in minutes
+    let SearchWindow = 120;
+    IdentityLogonEvents
+    // Filter emtpy UPN
+    | where isnotempty(AccountUpn)
+    | summarize
+        TotalAttempts = count(),
+        SuccessfulAttempts = countif(ActionType == "LogonSuccess"),
+        FailedAttempts = countif(ActionType == "LogonFailed")
+        by bin(Timestamp, TimeWindow), AccountUpn
+    // Use variables to define brute force attack
+    | where SuccessfulAttempts >= SuccessfulLogonsThreshold and FailedAttempts >= FailedLogonsThreshold
+    // join password changes
+    | join kind=inner (IdentityDirectoryEvents
+        | where Timestamp > ago(30d)
+        | where ActionType == "Account Password changed"
+        | where isnotempty(TargetAccountUpn)
+        | extend PasswordChangeTime = Timestamp
+        | project PasswordChangeTime, TargetAccountUpn)
+        on $left.AccountUpn == $right.TargetAccountUpn
+    // Collect timedifference between brute force (note that is uses the bin time) and the password change
+    | extend TimeDifference = datetime_diff('minute', PasswordChangeTime, Timestamp)
+    // Remove all entries where the password change took place before the brute force
+    | where TimeDifference > 0
+    | where TimeDifference <= SearchWindow
+    ```
+    
+    T1110.003 - Brute Force: Password Spraying
+    **KQL:**
+    ```
+    let thresholdForUniqueFailedAccounts = 20;
+    let upperBoundOfFailedLogonsPerAccount = 10;
+    let ratioSuccessFailedLogons = 0.5;
+    let timeframe = 1d;
+    DeviceLogonEvents
+    | where Timestamp >= ago(timeframe)
+    | where LogonType != "Unlock" and ActionType in ("LogonSuccess", "LogonFailed")
+    | where not(isempty( RemoteIP) and isempty( RemoteDeviceName))
+    | extend LocalLogon=parse_json(AdditionalFields)
+    | where RemoteIPType != "Loopback"
+    | summarize SuccessLogonCount = countif(ActionType == "LogonSuccess"), FailedLogonCount = countif(ActionType == "LogonFailed"),
+        UniqueAccountFailedLogons=dcountif(AccountName, ActionType == "LogonFailed"), FirstFailed=minif(Timestamp, ActionType == "LogonFailed"),
+        LastFailed=maxif(Timestamp, ActionType == "LogonFailed"), LastTimestamp=arg_max(Timestamp, tostring(ReportId)) by RemoteIP, DeviceName //Remote IP is here the source of the logon attempt.
+    | project-rename IPAddress=RemoteIP
+    | where UniqueAccountFailedLogons > thresholdForUniqueFailedAccounts and SuccessLogonCount*ratioSuccessFailedLogons < FailedLogonCount and UniqueAccountFailedLogons*upperBoundOfFailedLogonsPerAccount > FailedLogonCount 
+    ```
+    
