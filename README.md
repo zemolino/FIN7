@@ -2,38 +2,38 @@
 FIN7 is a sophisticated threat actor known for financially motivated attacks against organizations. Their TTPs include a variety of techniques across different stages of the attack lifecycle. Let's focus on a few key techniques and propose enhancements for detection:
 
 **A. Spearphishing:**
-* FIN7 often utilizes spearphishing emails with malicious attachments or links to deliver malware.
+* FIN7 initiates their attacks through spear-phishing campaigns, utilizing email attachments embedded with exploits to breach the target system.
 * They use social engineering to craft convincing emails.
 
 **B. Execution:**
-* FIN7 leverages PowerShell for various tasks, such as downloading payloads and executing commands.
+* Upon successful entry, FIN7 executes their attacks using diverse techniques, including native API, PowerShell, service execution, user execution, Windows Component Object Model (COM), Distributed COM, and Windows Management Instrumentation (WMI). Mshta utility and scheduled tasks are also exploited for code execution.
 
 **C. Persistance:**
-* 
+* To maintain a presence within the system, FIN7 creates new services, adds programs to startup folders, and manipulates registry run keys. Application shimming databases and process hooking are also utilized for persistence.
 
 **D. Privilege Escalation:**
-* 
+* For elevated privileges, FIN7 bypasses Windows User Account Control (UAC) mechanisms, employs new services, and exploits valid accounts. On Linux systems, they may use the sudo program, and on Windows, inject code into processes and manipulate DLL loading order.
 
 **E. Defense Evasion:**
-*  
+*  To avoid detection, FIN7 employs various evasion techniques such as code signing, deobfuscation, masquerading, obfuscation of files and information, software packing, and process injection. Guardrails, abused utilities, evasion of virtualization, and injecting code into hollowed processes are also used.
 
 **F. Credential Access:**
-* 
+* FIN7 steals credentials through techniques like credential dumping and input capture. Credential dumping involves extracting hashed or clear-text credentials, while input capture targets API or web portals. Hooking is another credential access tactic employed.
 
 **G. Discovery:**
-* 
+* During the discovery phase, FIN7 gains knowledge about the system by collecting information on open application windows, running processes, IP addresses, hardware details, network configuration, system owners, users, accounts, files, directories, group permissions, and registries.
 	
 **H. Lateral Movement:**
-* 
+* FIN7 moves laterally through the network by logging in via Remote Desktop Protocol (RDP), copying files, and exploiting Windows admin shares. They may also log into services with remote connections and use stolen password hashes through the "pass the hash" method.
 
-**H. Collection:**
-* 
+**I. Collection:**
+* After identifying key assets, FIN7 collects data from local sources using input and screen capture. In some cases, collected data is staged in a specific location for subsequent exfiltration.
 
-**H. Command and Controlt:**
-* 
+**J. Command and Control:**
+* Communication with compromised systems involves bypassing firewalls, utilizing common ports, employing connection proxies, remotely copying files, blending in with existing network traffic, and using standard cryptographic protocols. Legitimate programs and remote access software are sometimes used for command and control.
 
-**H. Exfiltration:**
-* 
+**K. Exfiltration:**
+* In the final phase, FIN7 exfiltrates stolen data through command-and-control channels, with the data potentially compressed and encrypted to avoid detection.
 
 ### Detection Rule Proposals:
 
@@ -442,4 +442,9 @@ Potential Lateral Movement with Non-Personal Privileged Account
     #### References
      - https://github.com/Cyb3r-Monk/Threat-Hunting-and-Detection/blob/main/Lateral%20Movement/TA0008%20-%20Potential%20Lateral%20Movement%20with%20Non-Personal%20Privileged%20Account.md
 
-        
+**I. Collection:**
+- **Detection Rule:**
+Potential Lateral Movement with Non-Personal Privileged Account
+
+    **KQL:** 
+    ```
