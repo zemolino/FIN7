@@ -444,7 +444,247 @@ Potential Lateral Movement with Non-Personal Privileged Account
 
 **I. Collection:**
 - **Detection Rule:**
-Potential Lateral Movement with Non-Personal Privileged Account
+T1039 - Data from Network Shared Drive
 
     **KQL:** 
     ```
+    let timeframe={{ timeframe | default('1h') }};
+    let system_roles = datatable(role:string, system:string)                  // Link roles to systems
+      [{{ role_system_mapping | default('"DC","dc1.corp.local",
+      "DC","dc2.corp.local",
+      "PRINT","printer.corp.local') }}
+      ];
+    let share_roles = datatable(role:string, share:string)                    // Link roles to shares
+      [{{ role_share_mapping |  default('"DC", @"\\\\*\\sysvol",
+      "DC",@"\\\\*\\netlogon",
+      "PRINT",@"\\\\*\\print$"') }}];
+    let allowed_system_shares = system_roles                                  // Link systems to shares
+      | join kind=inner share_roles on role
+      | extend system = tolower(system), share = tolower(share)
+      | project-away role
+      | summarize allowed_shares = make_set(share) by system;
+    let monitored_principals=datatable(identifier:string, Group_Name:string)  // Define a data-table with groups to monitor
+      [{{ monitored_principals | default('"AN", "Anonymous Logon",                                               // We accept the \'alias\' for these well-known SIDS
+      "AU", "Authenticated Users",
+      "BG","Built-in guests",
+      "BU","Built-in users",
+      "DG","Domain guests",
+      "DU","Domain users",
+      "WD","Everyone",
+      "IU","Interactively Logged-on users",
+      "LG","Local Guest",
+      "NU","Network logon users",
+      "513", "Domain Users",                                                  // Support matching on the last part of a SID
+      "514", "Domain Guests",
+      "545", "Builtin Users",
+      "546", "Builtin Guests",
+      "S-1-5-7", "Anonymous Logon" // For the global SIDS, we accept them as-is') }}
+      ];
+    SecurityEvent
+    | where TimeGenerated >= ago(timeframe)
+    | where EventID == 5143
+    {{ pre_filter_1 }}
+    | extend EventXML = parse_xml(EventData)
+    | extend OldSD = tostring(EventXML["EventData"]["Data"][13]["#text"])     // Grab the previous Security Descriptor
+    | extend NewSD = tostring(EventXML["EventData"]["Data"][14]["#text"])     // Grab the new Security Descriptor
+    | project-away EventXML
+    | where tostring(OldSD) !~ tostring(NewSD)                                // Don't bother with unchagned permissions
+    | extend system = tolower(Computer), share=tolower(ShareName)             // Normalize system & sharename for matching with whitelist
+    | join kind=leftouter allowed_system_shares on system                     // Retrieve the allowed shares per system
+    | where not(set_has_element(allowed_shares, share))                       // Check if the current share is an allowed share
+    | project-away system, share, allowed_shares                              // Get rid of temporary fields
+    | extend DACLS = extract_all(@"(D:(?:\((?:[\w\-]*;){5}(?:[\w\-]*)\))*)", tostring(NewSD)) //Grab all isntances of D:(DACL), in case there are multiple sets.
+    | project-away OldSD, NewSD                                               // Get rid of data we no longer need
+    | mv-expand DACLS to typeof(string)                                       // In case there are any duplicate/subsequent D: entrys (e.g. D:<dacls>S:<sacls>D:<dacls>) split them out to individual D: sets
+    | extend DACLS = substring(DACLS,2)                                       // Strip the leading D:
+    | extend DACLS = split(DACLS, ")")                                        // Split the sets of DACLS ()() to an array of individual DACLS (), this removes the trailing ) character
+    | mv-expand DACLS to typeof(string)                                       // Duplicate the records in such a way that only 1 dacl per record exist, we will aggregate them back later
+    | extend DACLS = substring(DACLS, 1)                                      // Also remove the leading ( character
+    | where not(isempty(DACLS)) and DACLS startswith "A;"                     // Remove any empty or non-allow DACLs
+    | extend allowed_principal = tostring(split(DACLS,";",5)[0])              // Grab the SID what is affected by this DACL
+    | extend allowed_principal = iff(not(allowed_principal startswith "S-" and string_size(allowed_principal) > 15), allowed_principal, split(allowed_principal,"-",countof(allowed_principal,"-"))[0]) //This line takes only the last part (e.g. 513) of a long SID, so you can refer to groups/users without needing to supply the full SID above.
+    | join kind=inner monitored_principals on $left.allowed_principal == $right.identifier //Join the found groups to the table of groups to be monitored above, adds the more readable 'group_name)
+    | project-away allowed_principal, identifier, DACLS
+    | summarize Authorized_Public_Principals = make_set(Group_Name), take_any(*) by TimeGenerated, SourceComputerId, EventData //Summarize the fields back, making a set of the various group_name values for this record
+    | project-away Group_Name
+    {{ post_filter_1 }}
+    ```
+     #### References
+     - https://github.com/FalconForceTeam/FalconFriday/blob/master/Collection/0xFF-0219-Excessive_Share_Permissions.md 
+    
+**I. Command and Control:**
+- **Detection Rule:**
+T1071.001 - Beacon Traffic Based on Common User Agents Visiting Limited Number of Domains.
+
+    **KQL:** 
+    ```
+    let timeframe = 1d; // timeframe during which to search for beaconing behaviour
+    let lookback = 7d; // Look back period to find if browser was used for other domains by user
+    let min_requests=50; // Minimum number of requests to consider it beacon traffic
+    let min_hours=8; // Minimum number of different hours during which connections were made to consider it beacon traffic
+    let trusted_user_count=10; // If visited by this many users a domain is considered 'trusted'
+    let max_sites=3; // Maximum number of different sites visited using this user-agent
+    // Client specific Query to obtain 'browser like' traffic from Proxy logs
+    let BrowserTraffic = (p:timespan) {
+    CommonSecurityLog
+    | where DeviceVendor == "Zscaler" and DeviceProduct == "NSSWeblog"
+    | where TimeGenerated >ago(p)
+    | project TimeGenerated, SourceUserName, DestinationHostName, RequestClientApplication
+    | where (RequestClientApplication startswith "Mozilla/" and RequestClientApplication contains "Gecko")
+    };
+    let CommonDomains = BrowserTraffic(timeframe)
+    | summarize source_count=dcount(SourceUserName) by DestinationHostName
+    | where source_count>trusted_user_count
+    | project DestinationHostName;
+    let CommonUA = BrowserTraffic(timeframe)
+    | summarize source_count=dcount(SourceUserName), host_count=dcount(DestinationHostName) by RequestClientApplication
+    | where source_count>trusted_user_count and host_count > 100 // Normal browsers are browsers used by many people and visiting many different sites
+    | project RequestClientApplication;
+    // Find browsers that are common, i.e. many users use them and they use them to visit many different sites
+    // But some users only use the browser to visit a very limited set of sites
+    // These are considered suspicious - since they might be an attacker masquerading a beacon as a legitimate browser
+    let SuspiciousBrowers = BrowserTraffic(timeframe)
+    | where RequestClientApplication in(CommonUA)
+    | summarize BrowserHosts=make_set(DestinationHostName),request_count=count() by RequestClientApplication, SourceUserName
+    | where array_length(BrowserHosts) <= max_sites and request_count >= min_requests
+    | project RequestClientApplication, SourceUserName,BrowserHosts;
+    // Just reporting on suspicious browsers gives too many false positives
+    // For example users that have the browser open on the login screen of 1 specific application
+    // In the suspicious browsers we can search for 'Beacon like' behaviour
+    // Get all browser traffic by the suspicious browsers
+    let PotentialAlerts=SuspiciousBrowers
+    | join BrowserTraffic(timeframe) on RequestClientApplication, SourceUserName
+    // Find beaconing like traffic - i.e. contacting the same host in many different hours
+    | summarize hour_count=dcount(bin(TimeGenerated,1h)), BrowserHosts=any(BrowserHosts), request_count=count() by RequestClientApplication, SourceUserName, DestinationHostName
+    | where hour_count >= min_hours and request_count >= min_requests
+    // Remove common domains like login.microsoft.com
+    | join kind=leftanti CommonDomains on DestinationHostName
+    | summarize RareHosts=make_set(DestinationHostName), TotalRequestCount=sum(request_count), BrowserHosts=any(BrowserHosts) by RequestClientApplication, SourceUserName
+    // Remove browsers that visit any common domains
+    | where array_length(RareHosts) == array_length(BrowserHosts);
+    // Look back for 7 days to see the browser was not used to visit more hosts
+    // This is to get rid of someone that started up the browser a long time ago
+    // And left only a single tab open
+    PotentialAlerts
+    | join BrowserTraffic(lookback) on SourceUserName, RequestClientApplication
+    | summarize RareHosts=any(RareHosts),BrowserHosts1d=any(BrowserHosts),BrowserHostsLookback=make_set(DestinationHostName) by SourceUserName, RequestClientApplication
+    | where array_length(RareHosts) == array_length(BrowserHostsLookback)
+    ```
+     #### References
+     - https://github.com/FalconForceTeam/FalconFriday/blob/master/Command%20and%20Control/T1071.001.md
+
+    T1105 - Ingress Tool Transfer - Certutil.
+
+    **KQL:** 
+    ```
+    // set the time span for the query
+    let Timeframe = 30d;
+    // set the HashTimeframe for the hash lookup, longer makes more accurate but obviously also more resource intensive
+    let HashTimeframe = 30d;
+    // Get all known SHA1 hashes for certutil executions or renamed files formerly named certutil
+    let CertUtilPESha1=DeviceProcessEvents | where Timestamp > ago(HashTimeframe)| where FileName contains "certutil"  | where isnotempty(SHA1) | summarize sha1=make_set(SHA1);
+    let CertUtilFESha1=DeviceFileEvents | where Timestamp > ago(HashTimeframe)| where PreviousFileName contains "certutil" or FileName contains "certutil"  | where isnotempty(SHA1) | summarize sha1=make_set(SHA1);
+    DeviceProcessEvents
+    | where Timestamp > ago(Timeframe)
+    // get all executions by processes with a SHA1 hash that is or was named certutil
+    | where SHA1 in (CertUtilPESha1) or SHA1 in (CertUtilFESha1) or FileName =~ "certutil.exe" or ProcessCommandLine has_any ("certutil")
+    // create a new field called CleanProcessCommandLine which gets populated with the value of ProcessCommandLine as Windows parses it for execution, 
+    // removing any potential command line obfuscation 
+    | extend CleanProcessCommandLine=parse_command_line(ProcessCommandLine, "windows")
+    // search for de-obfuscated commands used 
+    | where CleanProcessCommandLine has_any ("decode", "encode", "verify","url") 
+    // urlcache is the documented attribute, only url is also accepted
+    // verifyctl is the documented attribute, only verify is also accepted
+    | order by Timestamp
+    | project Timestamp, CleanProcessCommandLine, ProcessCommandLine, SHA1
+    ```
+    #### References
+     - https://github.com/FalconForceTeam/FalconFriday/blob/master/Command%20and%20Control/T1105-WIN-001.md
+    
+**I. Exfiltration:**
+- **Detection Rule:**
+T1567 - Exfiltration Over Web Service - Linked Malicious Storage Artifacts.
+
+    **KQL:** 
+    ```
+    //Collect the alert events
+    let alertData = SecurityAlert
+    | where DisplayName has "Potential malware uploaded to"
+    | extend Entities = parse_json(Entities)
+    | mv-expand Entities;
+    //Parse the IP address data
+    let ipData = alertData
+    | where Entities['Type'] =~ "ip"
+    | extend AttackerIP = tostring(Entities['Address']), AttackerCountry = tostring(Entities['Location']['CountryName']);
+    //Parse the file data
+    let FileData = alertData
+    | where Entities['Type'] =~ "file"
+    | extend MaliciousFileDirectory = tostring(Entities['Directory']), MaliciousFileName = tostring(Entities['Name']), MaliciousFileHashes = tostring(Entities['FileHashes']);
+    //Combine the File and IP data together
+    ipData
+    | join (FileData) on VendorOriginalId
+    | summarize by TimeGenerated, AttackerIP, AttackerCountry, DisplayName, ResourceId, AlertType, MaliciousFileDirectory, MaliciousFileName, MaliciousFileHashes
+    //Create a type column so we can track if it was a File storage or blobl storage upload
+    | extend type = iff(DisplayName has "file", "File", "Blob")
+    | join (
+      union
+      StorageFileLogs,
+      StorageBlobLogs
+      //File upload operations
+      | where OperationName =~ "PutBlob" or OperationName =~ "PutRange"
+      //Parse out the uploader IP
+      | extend ClientIP = tostring(split(CallerIpAddress, ":", 0)[0])
+      //Extract the filename from the Uri
+      | extend FileName = extract(@"\/([\w\-. ]+)\?", 1, Uri)
+      //Base64 decode the MD5 filehash, we will encounter non-ascii hex so string operations don't work
+      //We can work around this by making it an array then converting it to hex from an int
+      | extend base64Char = base64_decode_toarray(ResponseMd5)
+      | mv-expand base64Char
+      | extend hexChar = tohex(toint(base64Char))
+      | extend hexChar = iff(strlen(hexChar) < 2, strcat("0", hexChar), hexChar)
+      | extend SourceTable = iff(OperationName has "range", "StorageFileLogs", "StorageBlobLogs")
+      | summarize make_list(hexChar, 1000) by CorrelationId, ResponseMd5, FileName, AccountName, TimeGenerated, RequestBodySize, ClientIP, SourceTable
+      | extend Md5Hash = strcat_array(list_hexChar, "")
+      //Pack the file information the summarise into a ClientIP row
+      | extend p = pack("FileName", FileName, "FileSize", RequestBodySize, "Md5Hash", Md5Hash, "Time", TimeGenerated, "SourceTable", SourceTable)
+      | summarize UploadedFileInfo=make_list(p, 10000), FilesUploaded=count() by ClientIP
+          | join kind=leftouter (
+            union
+            StorageFileLogs,
+            StorageBlobLogs
+            | where OperationName =~ "DeleteFile" or OperationName =~ "DeleteBlob"
+            | extend ClientIP = tostring(split(CallerIpAddress, ":", 0)[0])
+            | extend FileName = extract(@"\/([\w\-. ]+)\?", 1, Uri)
+            | extend SourceTable = iff(OperationName has "range", "StorageFileLogs", "StorageBlobLogs")
+            | extend p = pack("FileName", FileName, "Time", TimeGenerated, "SourceTable", SourceTable)
+            | summarize DeletedFileInfo=make_list(p, 10000), FilesDeleted=count() by ClientIP
+            ) on ClientIP
+      ) on $left.AttackerIP == $right.ClientIP
+    | mvexpand UploadedFileInfo
+    | extend LinkedMaliciousFileName = tostring(UploadedFileInfo.FileName)
+    | extend LinkedMaliciousFileHash = tostring(UploadedFileInfo.Md5Hash)
+    | extend HashAlgorithm = "MD5"
+    | project AlertTimeGenerated = TimeGenerated, LinkedMaliciousFileName, LinkedMaliciousFileHash, HashAlgorithm, AlertType, AttackerIP, AttackerCountry, MaliciousFileDirectory, MaliciousFileName, FilesUploaded, UploadedFileInfo
+    ```
+    T1567 - Exfiltration Over Web Service - Insider Risk_Sensitive Data Access Outside Organizational Geo-location.
+
+    **KQL:** 
+    ```
+    InformationProtectionLogs_CL
+    | extend UserPrincipalName = UserId_s
+    | where LabelName_s <> ""
+    | join kind=inner (SigninLogs) on UserPrincipalName
+    | extend City = tostring(LocationDetails.city)
+    // | where City <> "New York" // Configure Location Details within Organizational Requirements
+    | extend State = tostring(LocationDetails.state)
+    // | where State <> "Texas" // Configure Location Details within Organizational Requirements
+    | extend Country_Region = tostring(LocationDetails.countryOrRegion)
+    // | where Country_Region <> "US" // Configure Location Details within Organizational Requirements
+    // | lookup kind=inner _GetWatchlist('<Your Watchlist Name>') on $left.UserPrincipalName == $right.SearchKey
+    | summarize count() by UserPrincipalName, LabelName_s, Activity_s, City, State, Country_Region, TimeGenerated
+    | sort by count_ desc
+    | limit 25
+    | extend AccountCustomEntity = UserPrincipalName
+    ```
+    #### References
+     - https://github.com/Azure/Azure-Sentinel/
