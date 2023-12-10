@@ -1,7 +1,7 @@
 # Analysis of FIN7 TTPs:
 FIN7 is a sophisticated threat actor known for financially motivated attacks against organizations. Their TTPs include a variety of techniques across different stages of the attack lifecycle. Let's focus on a few key techniques and propose enhancements for detection:
 
-**A. Spearphishing:**
+**A. Initial Access:**
 * FIN7 initiates their attacks through spear-phishing campaigns, utilizing email attachments embedded with exploits to breach the target system.
 * They use social engineering to craft convincing emails.
 
